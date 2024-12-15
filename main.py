@@ -3,10 +3,10 @@ from tkinter import messagebox, ttk
 import json
 import os
 
-from User_Registration import UserRegistration
-from Order_Placement import Cart, OrderPlacement, UserProfile, RestaurantMenu, PaymentMethod
-from Payment_Processing import PaymentProcessing
-from Restaurant_Browsing import RestaurantDatabase, RestaurantBrowsing
+from test_UserRegistration import UserRegistration
+from test_OrderPlacement import Cart, OrderPlacement, UserProfile, RestaurantMenu, PaymentMethod
+from test_PaymentProcessing import PaymentProcessing
+from test_RestaurantBrowsing import RestaurantDatabase, RestaurantBrowsing
 
 # Utility functions for user data storage
 USERS_FILE = "users.json"
@@ -212,15 +212,45 @@ class MainAppFrame(tk.Frame):
             self.results_tree.insert("", "end", values=(r["cuisine"], r["location"], r["rating"]))
 
     def add_item_to_cart(self):
-        # For simplicity, let's assume user always adds "Pizza"
-        # A more sophisticated approach: Let user select from menu items.
-        # We will show a small popup to choose items.
-        menu_popup = AddItemPopup(self, self.restaurant_menu, self.cart)
-        self.wait_window(menu_popup)
+        chosen_restaurant = self.choose_restaurant()
+        if chosen_restaurant:  # 如果用户选择了一个餐馆
+            menu_popup = AddItemPopup(self, chosen_restaurant, self.cart)
+            self.wait_window(menu_popup)
+
+    def choose_restaurant(self):
+        restaurants = self.database.get_restaurants()
+        restaurant_names = [r["name"] for r in restaurants]
+
+        popup = tk.Toplevel(self)
+        popup.title("Choose Restaurant")
+        tk.Label(popup, text="Select a restaurant:").pack(pady=10)
+
+        var = tk.StringVar(popup)
+        var.set(restaurant_names[0])
+        menu = tk.OptionMenu(popup, var, *restaurant_names)
+        menu.pack(pady=5)
+
+        def on_confirm():
+            chosen_restaurant_name = var.get()
+            chosen_restaurant = next((r for r in restaurants if r["name"] == chosen_restaurant_name), None)
+            popup.destroy()
+            self.show_menu_popup(chosen_restaurant)
+
+        tk.Button(popup, text="Confirm", command=on_confirm).pack(pady=10)
+        popup.wait_window()  # 这里会阻塞直到弹出窗口关闭
+
+    def show_menu_popup(self, chosen_restaurant):
+        if chosen_restaurant:
+            menu_popup = AddItemPopup(self, chosen_restaurant, self.cart)
+            self.wait_window(menu_popup)
+
 
     def view_cart(self):
-        cart_view = CartViewPopup(self, self.cart)
-        self.wait_window(cart_view)
+        if CartViewPopup.instance and CartViewPopup.instance.winfo_exists():  # 检查实例是否存在且窗口未被销毁
+            CartViewPopup.instance.lift()  # 激活现有窗口
+        else:
+            cart_view = CartViewPopup(self, self.cart)  # 创建新窗口
+            self.wait_window(cart_view)
 
     def checkout(self):
         # Validate order and proceed if valid
@@ -235,17 +265,17 @@ class MainAppFrame(tk.Frame):
 
 
 class AddItemPopup(tk.Toplevel):
-    def __init__(self, master, menu, cart):
+    def __init__(self, master, restaurant, cart):
         super().__init__(master)
         self.title("Add Item to Cart")
-        self.menu = menu
+        self.restaurant = restaurant
         self.cart = cart
 
-        tk.Label(self, text="Select an item to add to cart:").pack(pady=10)
+        tk.Label(self, text=f"Select a dish from {restaurant['name']}:").pack(pady=10)
 
         self.item_var = tk.StringVar()
-        self.item_var.set(self.menu.available_items[0] if self.menu.available_items else "")
-        tk.OptionMenu(self, self.item_var, *self.menu.available_items).pack(pady=5)
+        self.item_var.set(restaurant['dishes'][0] if restaurant['dishes'] else "")
+        tk.OptionMenu(self, self.item_var, *restaurant['dishes']).pack(pady=5)
 
         tk.Label(self, text="Quantity:").pack()
         self.qty_entry = tk.Entry(self)
@@ -257,23 +287,72 @@ class AddItemPopup(tk.Toplevel):
     def add_to_cart(self):
         item = self.item_var.get()
         qty = int(self.qty_entry.get())
+
+        # 检查输入的数量是否合法
+        if qty <= 0:
+            messagebox.showerror("Error", "Quantity must be greater than 0.")
+            return
+
         price = 10.0  # Static price for simplicity
-        msg = self.cart.add_item(item, price, qty)
-        messagebox.showinfo("Cart", msg)
+        self.cart.add_item(item, price, qty)
+        messagebox.showinfo("Cart", f"Added {qty} of {item} to cart.")
         self.destroy()
 
 
 class CartViewPopup(tk.Toplevel):
+    instance = None  # 类变量，用于存储当前的实例
+
     def __init__(self, master, cart):
         super().__init__(master)
         self.title("Cart Items")
+        self.cart = cart
+        self.item_frames = []  # 用于存储每个商品的frame，以便后续删除
 
-        items = cart.view_cart()
+        if CartViewPopup.instance:
+            # 如果实例已经存在，那么将焦点转移到现有的窗口上
+            CartViewPopup.instance.lift()
+            return
+        else:
+            CartViewPopup.instance = self  # 设置当前实例为类变量
+
+        self.update_cart_display()  # 初始显示购物车内容
+
+    def update_cart_display(self):
+        for frame in self.item_frames:  # 清除现有的商品显示
+            frame.destroy()
+        self.item_frames = []  # 重置frame列表
+
+        items = self.cart.view_cart()
         if not items:
             tk.Label(self, text="Your cart is empty").pack(pady=20)
         else:
-            for i in items:
-                tk.Label(self, text=f"{i['name']} x{i['quantity']} = ${i['subtotal']:.2f}").pack()
+            for item in items:
+                frame = tk.Frame(self)  # 为每个商品创建一个frame
+                frame.pack(pady=5)
+
+                # 商品信息
+                label = tk.Label(frame, text=f"{item['name']} x{item['quantity']} = ${item['subtotal']:.2f}")
+                label.pack(side="left")
+
+                # 删除按钮
+                remove_button = tk.Button(frame, text="x", command=lambda: self.remove_item(item))
+                remove_button.pack(side="right")
+
+                self.item_frames.append(frame)  # 将frame添加到列表中
+
+    def remove_item(self, item):
+        # 从购物车中移除商品，并更新界面
+        self.cart.remove_item(item['name'])
+        self.update_cart_display()  # 更新购物车显示
+
+    def add_item(self, item):
+        # 添加商品到购物车，并更新界面
+        self.cart.add_item(item)
+        self.update_cart_display()  # 更新购物车显示
+
+    def on_closing(self):
+        CartViewPopup.instance = None
+        self.destroy()
 
 
 class CheckoutPopup(tk.Toplevel):
@@ -308,6 +387,12 @@ class CheckoutPopup(tk.Toplevel):
         self.card_entry = tk.Entry(self)
         self.card_entry.insert(0, "1234567812345678")
         self.card_entry.pack(pady=5)
+
+        # Discount code entry
+        tk.Label(self, text="Discount Code:").pack(pady=5)
+        self.discount_code_entry = tk.Entry(self)
+        self.discount_code_entry.insert(0, "12345")
+        self.discount_code_entry.pack(pady=5)
 
         tk.Button(self, text="Confirm Order", command=self.confirm_order).pack(pady=10)
 
